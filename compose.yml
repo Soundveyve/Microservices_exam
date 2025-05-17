@@ -1,0 +1,63 @@
+services:
+  loadbalancer:
+    image: nginx:latest
+    ports:
+      - 127.0.0.1:8080:80
+    volumes:
+      - ./config/nginx:/etc/nginx/templates
+      - ./frontend:/service/frontend
+  core-service:
+    build:
+      context: .
+      dockerfile: core.dockerfile
+  date-service:
+    build:
+      context: .
+      dockerfile: date.dockerfile
+  storage-service:
+    build:
+      context: .
+      dockerfile: storage.dockerfile
+    environment:
+      - DB_ADDR=database
+      - DB_USER=${DB_USER}
+      - DB_PASS=${DB_PASS}
+      - DB_NAME=${DB_NAME}
+  database:
+    image: postgres:17.4-alpine3.21
+    restart: unless-stopped # Контейнер перезапускается каждый раз, пока не будет команды dockeer compose down
+    environment:
+      # Берём с локальных переменных окружения
+      - POSTGRES_USER=${DB_USER}
+      - POSTGRES_PASSWORD=${DB_PASS}
+      - POSTGRES_DB=${DB_NAME}
+    ports:
+      - ${LOCAL_DB_PORT}:5432
+    # БД в контейнере стартует ой как не сразу, а вот коннекты к ней идут мгновенно
+    # Чтобы не свалиться в ошибку - делаем healtcheck, чтобы нормально проверять доступность для подключения
+    # healthcheck делается в контейнере самой БД, через её же утилиту. Поэтому если используем не PostgreSQL, то думаем
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -q -d ${DB_NAME} -U ${DB_USER}"]
+      retries: 10
+      interval: 5s
+      timeout: 5s
+      start_period: 10s
+  migrate-util:
+    env_file:
+      - ./.env
+    image: flyway/flyway
+    volumes:
+      - ./migrations:/flyway/sql
+    depends_on:
+      database:
+        # Указание на то, что возможность подключения проверяетя через healthcheck.
+        # service_healthy = Docker ищет инструкцию healthcheck внутри сервиса и каждый раз выполняет инструкции по готовности
+        condition: service_healthy
+    command:
+      [
+        "-url=jdbc:postgresql://database:$LOCAL_DB_PORT/$DB_NAME",
+        "-user=$DB_USER",
+        "-password=$DB_PASS",
+        "-target=$STATE_FOR_MIGRATIONS",
+        "migrate",
+      ]
